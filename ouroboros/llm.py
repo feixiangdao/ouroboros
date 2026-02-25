@@ -1,16 +1,17 @@
 """
 Ouroboros — LLM client.
 
-The only module that communicates with the LLM API.
-Supports any OpenAI-compatible endpoint (OpenRouter, anyrouter, LiteLLM, etc.).
-Contract: chat(), default_model(), available_models(), add_usage().
+Supports two API formats controlled by OUROBOROS_API_TYPE:
+  - "openai"             → OpenAI-compatible SDK  (/chat/completions)
+  - "anthropic-messages" → Anthropic Messages SDK (/messages)
 
 Configuration (env vars):
-  OUROBOROS_BASE_URL  — API base URL  (default: https://anyrouter.top/v1)
-  OUROBOROS_API_KEY   — API key       (fallback: OPENROUTER_API_KEY)
-  OUROBOROS_MODEL     — main model    (default: claude-opus-4-6)
-  OUROBOROS_MODEL_CODE— code model    (default: same as OUROBOROS_MODEL)
-  OUROBOROS_MODEL_LIGHT— light model  (default: claude-opus-4-6)
+  OUROBOROS_BASE_URL  — API base URL     (default: https://anyrouter.top)
+  OUROBOROS_API_KEY   — API key          (fallback: OPENROUTER_API_KEY)
+  OUROBOROS_API_TYPE  — API format       (default: anthropic-messages)
+  OUROBOROS_MODEL     — main model       (default: claude-opus-4-6)
+  OUROBOROS_MODEL_CODE— code model       (default: same as OUROBOROS_MODEL)
+  OUROBOROS_MODEL_LIGHT— light model     (default: claude-opus-4-6)
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import logging
 import os
 import pathlib
 import time
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
@@ -70,10 +72,131 @@ def apply_provider(name: str) -> bool:
     if models.get("light"):
         os.environ["OUROBOROS_MODEL_LIGHT"] = models["light"]
 
+    api_type = cfg.get("api", "openai")
+    os.environ["OUROBOROS_API_TYPE"] = api_type
     os.environ["OUROBOROS_PROVIDER"] = name
-    log.info("Provider switched to '%s' (base_url=%s, model=%s)",
-             name, cfg.get("base_url"), models.get("main"))
+    log.info("Provider switched to '%s' (base_url=%s, api=%s, model=%s)",
+             name, cfg.get("base_url"), api_type, models.get("main"))
     return True
+
+
+# ---------------------------------------------------------------------------
+# Message format converters  (OpenAI ↔ Anthropic)
+# ---------------------------------------------------------------------------
+
+def _msgs_to_anthropic(messages: List[Dict[str, Any]]) -> tuple:
+    """Convert OpenAI-format messages to Anthropic format.
+    Returns (system_prompt: str, anthropic_messages: list).
+    """
+    system = ""
+    result: List[Dict[str, Any]] = []
+
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content")
+
+        if role == "system":
+            system = str(content or "")
+            continue
+
+        if role == "tool":
+            # Tool result → user message with tool_result block
+            block: Dict[str, Any] = {
+                "type": "tool_result",
+                "tool_use_id": msg.get("tool_call_id", ""),
+                "content": str(content or ""),
+            }
+            # Merge consecutive tool results into one user message
+            if result and result[-1]["role"] == "user" and isinstance(result[-1]["content"], list):
+                result[-1]["content"].append(block)
+            else:
+                result.append({"role": "user", "content": [block]})
+            continue
+
+        if role == "assistant":
+            blocks: List[Dict[str, Any]] = []
+            if content:
+                blocks.append({"type": "text", "text": str(content)})
+            for tc in (msg.get("tool_calls") or []):
+                fn = tc.get("function", {})
+                try:
+                    inp = json.loads(fn.get("arguments", "{}"))
+                except (json.JSONDecodeError, TypeError):
+                    inp = {}
+                blocks.append({
+                    "type": "tool_use",
+                    "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:8]}",
+                    "name": fn.get("name", ""),
+                    "input": inp,
+                })
+            if blocks:
+                result.append({"role": "assistant", "content": blocks})
+            continue
+
+        if role == "user":
+            if isinstance(content, list):
+                result.append({"role": "user", "content": content})
+            else:
+                result.append({"role": "user", "content": str(content or "")})
+
+    return system, result
+
+
+def _tools_to_anthropic(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Convert OpenAI function-tool defs to Anthropic tool format."""
+    out = []
+    for t in tools:
+        if t.get("type") != "function":
+            continue
+        fn = t.get("function", {})
+        out.append({
+            "name": fn.get("name", ""),
+            "description": fn.get("description", ""),
+            "input_schema": fn.get("parameters") or {"type": "object", "properties": {}},
+        })
+    return out
+
+
+def _anthropic_resp_to_openai(response: Any) -> tuple:
+    """Convert Anthropic response object to OpenAI-style (msg_dict, usage_dict)."""
+    msg: Dict[str, Any] = {"role": "assistant", "content": None, "tool_calls": None}
+    text_parts: List[str] = []
+    tool_calls: List[Dict[str, Any]] = []
+
+    for block in (getattr(response, "content", None) or []):
+        btype = getattr(block, "type", "")
+        if btype == "text":
+            text_parts.append(block.text)
+        elif btype == "tool_use":
+            tool_calls.append({
+                "id": block.id,
+                "type": "function",
+                "function": {
+                    "name": block.name,
+                    "arguments": json.dumps(block.input or {}),
+                },
+            })
+
+    if text_parts:
+        msg["content"] = "\n".join(text_parts)
+    if tool_calls:
+        msg["tool_calls"] = tool_calls
+
+    u = getattr(response, "usage", None) or {}
+    input_tok  = getattr(u, "input_tokens",  0) or 0
+    output_tok = getattr(u, "output_tokens", 0) or 0
+    cached     = getattr(u, "cache_read_input_tokens",    0) or 0
+    cache_wri  = getattr(u, "cache_creation_input_tokens", 0) or 0
+
+    usage: Dict[str, Any] = {
+        "prompt_tokens":     input_tok,
+        "completion_tokens": output_tok,
+        "total_tokens":      input_tok + output_tok,
+        "cached_tokens":     cached,
+        "cache_write_tokens": cache_wri,
+        "cost": None,
+    }
+    return msg, usage
 
 
 def normalize_reasoning_effort(value: str, default: str = "medium") -> str:
@@ -162,12 +285,13 @@ def fetch_openrouter_pricing() -> Dict[str, Tuple[float, float, float]]:
 
 
 class LLMClient:
-    """OpenAI-compatible LLM API wrapper. Supports anyrouter, OpenRouter, LiteLLM, etc."""
+    """LLM API wrapper. Supports OpenAI-compatible and Anthropic Messages formats."""
 
     def __init__(
         self,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
+        api_type: Optional[str] = None,
     ):
         self._api_key = (
             api_key
@@ -176,11 +300,17 @@ class LLMClient:
         )
         self._base_url = (
             base_url
-            or os.environ.get("OUROBOROS_BASE_URL", "https://anyrouter.top/v1")
+            or os.environ.get("OUROBOROS_BASE_URL", "https://anyrouter.top")
         )
-        self._client = None
+        self._api_type = (
+            api_type
+            or os.environ.get("OUROBOROS_API_TYPE", "anthropic-messages")
+        ).strip().lower()
+        self._client = None         # OpenAI client (lazy)
+        self._anthropic_client = None  # Anthropic client (lazy)
 
     def _get_client(self):
+        """Return OpenAI-compatible client."""
         if self._client is None:
             from openai import OpenAI
             self._client = OpenAI(
@@ -192,6 +322,16 @@ class LLMClient:
                 },
             )
         return self._client
+
+    def _get_anthropic_client(self):
+        """Return Anthropic client."""
+        if self._anthropic_client is None:
+            import anthropic
+            self._anthropic_client = anthropic.Anthropic(
+                api_key=self._api_key,
+                base_url=self._base_url,
+            )
+        return self._anthropic_client
 
     def _fetch_generation_cost(self, generation_id: str) -> Optional[float]:
         """Fetch cost from OpenRouter Generation API as fallback."""
@@ -227,16 +367,59 @@ class LLMClient:
         tool_choice: str = "auto",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Single LLM call. Returns: (response_message_dict, usage_dict with cost)."""
+        if self._api_type == "anthropic-messages":
+            return self._chat_anthropic(messages, model, tools, max_tokens, tool_choice)
+        return self._chat_openai(messages, model, tools, reasoning_effort, max_tokens, tool_choice)
+
+    def _chat_anthropic(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str,
+        tools: Optional[List[Dict[str, Any]]],
+        max_tokens: int,
+        tool_choice: str,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Call via Anthropic Messages API."""
+        client = self._get_anthropic_client()
+        system, anth_msgs = _msgs_to_anthropic(messages)
+
+        kwargs: Dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": anth_msgs,
+        }
+        if system:
+            kwargs["system"] = system
+        if tools:
+            anth_tools = _tools_to_anthropic(tools)
+            if anth_tools:
+                kwargs["tools"] = anth_tools
+                if tool_choice == "required":
+                    kwargs["tool_choice"] = {"type": "any"}
+                else:
+                    kwargs["tool_choice"] = {"type": "auto"}
+
+        resp = client.messages.create(**kwargs)
+        return _anthropic_resp_to_openai(resp)
+
+    def _chat_openai(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str,
+        tools: Optional[List[Dict[str, Any]]],
+        reasoning_effort: str,
+        max_tokens: int,
+        tool_choice: str,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Call via OpenAI-compatible API."""
         client = self._get_client()
         effort = normalize_reasoning_effort(reasoning_effort)
 
         extra_body: Dict[str, Any] = {
             "reasoning": {"effort": effort, "exclude": True},
         }
-
-        # Provider-specific routing (only applies to OpenRouter-compatible endpoints)
-        _base = self._base_url.lower()
-        if "openrouter" in _base and model.startswith("anthropic/"):
+        # Pin Anthropic models when using OpenRouter
+        if "openrouter" in self._base_url.lower() and model.startswith("anthropic/"):
             extra_body["provider"] = {
                 "order": ["Anthropic"],
                 "allow_fallbacks": False,
@@ -250,11 +433,9 @@ class LLMClient:
             "extra_body": extra_body,
         }
         if tools:
-            # Add cache_control to last tool for Anthropic prompt caching
-            # This caches all tool schemas (they never change between calls)
-            tools_with_cache = [t for t in tools]  # shallow copy
+            tools_with_cache = [t for t in tools]
             if tools_with_cache:
-                last_tool = {**tools_with_cache[-1]}  # copy last tool
+                last_tool = {**tools_with_cache[-1]}
                 last_tool["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
                 tools_with_cache[-1] = last_tool
             kwargs["tools"] = tools_with_cache
@@ -266,25 +447,20 @@ class LLMClient:
         choices = resp_dict.get("choices") or [{}]
         msg = (choices[0] if choices else {}).get("message") or {}
 
-        # Extract cached_tokens from prompt_tokens_details if available
         if not usage.get("cached_tokens"):
-            prompt_details = usage.get("prompt_tokens_details") or {}
-            if isinstance(prompt_details, dict) and prompt_details.get("cached_tokens"):
-                usage["cached_tokens"] = int(prompt_details["cached_tokens"])
+            pd = usage.get("prompt_tokens_details") or {}
+            if isinstance(pd, dict) and pd.get("cached_tokens"):
+                usage["cached_tokens"] = int(pd["cached_tokens"])
 
-        # Extract cache_write_tokens from prompt_tokens_details if available
-        # OpenRouter: "cache_write_tokens"
-        # Native Anthropic: "cache_creation_tokens" or "cache_creation_input_tokens"
         if not usage.get("cache_write_tokens"):
-            prompt_details_for_write = usage.get("prompt_tokens_details") or {}
-            if isinstance(prompt_details_for_write, dict):
-                cache_write = (prompt_details_for_write.get("cache_write_tokens")
-                              or prompt_details_for_write.get("cache_creation_tokens")
-                              or prompt_details_for_write.get("cache_creation_input_tokens"))
-                if cache_write:
-                    usage["cache_write_tokens"] = int(cache_write)
+            pd2 = usage.get("prompt_tokens_details") or {}
+            if isinstance(pd2, dict):
+                cw = (pd2.get("cache_write_tokens")
+                      or pd2.get("cache_creation_tokens")
+                      or pd2.get("cache_creation_input_tokens"))
+                if cw:
+                    usage["cache_write_tokens"] = int(cw)
 
-        # Ensure cost is present in usage (OpenRouter includes it, but fallback if missing)
         if not usage.get("cost"):
             gen_id = resp_dict.get("id") or ""
             if gen_id:

@@ -2,7 +2,8 @@
   "default": "anyrouter",
   "providers": {
     "anyrouter": {
-      "base_url": "https://anyrouter.top/v1",
+      "base_url": "https://anyrouter.top",
+      "api": "anthropic-messages",
       "api_key_env": "ANYROUTER_API_KEY",
       "models": {
         "main":  "claude-opus-4-6",
@@ -12,6 +13,7 @@
     },
     "openrouter": {
       "base_url": "https://openrouter.ai/api/v1",
+      "api": "openai",
       "api_key_env": "OPENROUTER_API_KEY",
       "models": {
         "main":  "anthropic/claude-sonnet-4.6",
