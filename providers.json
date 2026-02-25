@@ -9,7 +9,8 @@
         "main":  "kimi-for-coding",
         "code":  "kimi-for-coding",
         "light": "kimi-for-coding"
-      }
+      },
+      "available_models": ["kimi-for-coding"]
     },
     "anyrouter": {
       "base_url": "https://anyrouter.top",
@@ -19,7 +20,11 @@
         "main":  "anyrouter/claude-opus-4-6",
         "code":  "anyrouter/claude-opus-4-6",
         "light": "anyrouter/claude-opus-4-6"
-      }
+      },
+      "available_models": [
+        "anyrouter/claude-opus-4-6",
+        "anyrouter/claude-sonnet-4-6"
+      ]
     },
     "openrouter": {
       "base_url": "https://openrouter.ai/api/v1",
@@ -29,7 +34,13 @@
         "main":  "anthropic/claude-sonnet-4.6",
         "code":  "anthropic/claude-sonnet-4.6",
         "light": "google/gemini-3-pro-preview"
-      }
+      },
+      "available_models": [
+        "anthropic/claude-opus-4-6",
+        "anthropic/claude-sonnet-4.6",
+        "google/gemini-3-pro-preview",
+        "openai/gpt-4.1"
+      ]
     }
   }
 }

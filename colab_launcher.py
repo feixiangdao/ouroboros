@@ -44,7 +44,7 @@ def ensure_claude_code_cli() -> bool:
 # 0.1) provide apply_patch shim
 # ----------------------------
 from ouroboros.apply_patch import install as install_apply_patch
-from ouroboros.llm import DEFAULT_LIGHT_MODEL, apply_provider, list_providers
+from ouroboros.llm import DEFAULT_LIGHT_MODEL, apply_provider, list_providers, list_available_models
 install_apply_patch()
 
 # ----------------------------
@@ -160,17 +160,18 @@ if _default_provider:
     apply_provider(_default_provider)
 
 # Set env vars — use setdefault for values apply_provider may have already set
-os.environ["OUROBOROS_API_KEY"]   = str(OUROBOROS_API_KEY)
-os.environ["OPENROUTER_API_KEY"]  = str(OUROBOROS_API_KEY)  # backward compat
-os.environ.setdefault("OUROBOROS_BASE_URL", str(OUROBOROS_BASE_URL))
+# (apply_provider sets API_KEY, BASE_URL, MODEL, API_TYPE from providers.json)
+os.environ.setdefault("OUROBOROS_API_KEY",    str(OUROBOROS_API_KEY))
+os.environ.setdefault("OPENROUTER_API_KEY",   str(OUROBOROS_API_KEY))
+os.environ.setdefault("OUROBOROS_BASE_URL",   str(OUROBOROS_BASE_URL))
+os.environ.setdefault("OUROBOROS_MODEL",      str(MODEL_MAIN  or "kimi-for-coding"))
+os.environ.setdefault("OUROBOROS_MODEL_CODE", str(MODEL_CODE  or "kimi-for-coding"))
+if MODEL_LIGHT:
+    os.environ.setdefault("OUROBOROS_MODEL_LIGHT", str(MODEL_LIGHT))
 os.environ["OPENAI_API_KEY"]      = str(OPENAI_API_KEY or "")
 os.environ["ANTHROPIC_API_KEY"]   = str(ANTHROPIC_API_KEY or "")
 os.environ["GITHUB_USER"]         = str(GITHUB_USER)
 os.environ["GITHUB_REPO"]         = str(GITHUB_REPO)
-os.environ["OUROBOROS_MODEL"]     = str(MODEL_MAIN  or "anyrouter/claude-opus-4-6")
-os.environ["OUROBOROS_MODEL_CODE"]= str(MODEL_CODE  or "anyrouter/claude-opus-4-6")
-if MODEL_LIGHT:
-    os.environ["OUROBOROS_MODEL_LIGHT"] = str(MODEL_LIGHT)
 os.environ["OUROBOROS_DIAG_HEARTBEAT_SEC"] = str(DIAG_HEARTBEAT_SEC)
 os.environ["OUROBOROS_DIAG_SLOW_CYCLE_SEC"] = str(DIAG_SLOW_CYCLE_SEC)
 os.environ["TELEGRAM_BOT_TOKEN"] = str(TELEGRAM_BOT_TOKEN)
@@ -475,15 +476,21 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
     if lowered.startswith("/provider"):
         parts = text.strip().split()
         if len(parts) == 1:
-            # List available providers
+            # List available providers with inline keyboard
             providers = list_providers()
             current = os.environ.get("OUROBOROS_PROVIDER", "未知")
             lines = [f"当前路由: {current}", "", "可用路由:"]
             for pname, pcfg in providers.items():
                 marker = " ←" if pname == current else ""
                 lines.append(f"  • {pname} ({pcfg.get('base_url', '?')}){marker}")
-            lines.append("", "用 /provider <名称> 切换")
-            send_with_budget(chat_id, "\n".join(lines))
+            lines.append("", "点击按钮快速切换:")
+            # Build inline keyboard buttons
+            buttons = []
+            for pname in providers:
+                label = f"{'● ' if pname == current else ''}{pname}"
+                buttons.append([{"text": label, "callback_data": f"provider:{pname}"}])
+            markup = {"inline_keyboard": buttons} if buttons else None
+            send_with_budget(chat_id, "\n".join(lines), reply_markup=markup)
         else:
             provider_name = parts[1].strip()
             if apply_provider(provider_name):
@@ -504,6 +511,64 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
                 )
         return True
 
+    if lowered.startswith("/model"):
+        parts = text.strip().split(maxsplit=1)
+        current_provider = os.environ.get("OUROBOROS_PROVIDER", "")
+        current_model = os.environ.get("OUROBOROS_MODEL", "")
+
+        if len(parts) >= 2:
+            # Direct mode: /model <model_name>
+            target_model = parts[1].strip()
+            # Search for the model across all providers
+            all_models = list_available_models()
+            found_provider = None
+            for pname, models in all_models.items():
+                if target_model in models:
+                    found_provider = pname
+                    break
+            if found_provider:
+                # Switch provider if needed, then set model
+                if found_provider != current_provider:
+                    apply_provider(found_provider)
+                os.environ["OUROBOROS_MODEL"] = target_model
+                os.environ["OUROBOROS_MODEL_CODE"] = target_model
+                kill_workers()
+                spawn_workers(MAX_WORKERS)
+                send_with_budget(
+                    chat_id,
+                    f"✅ 模型已切换\n"
+                    f"  路由: {found_provider}\n"
+                    f"  模型: {target_model}"
+                )
+            else:
+                # Not found in available_models
+                send_with_budget(
+                    chat_id,
+                    f"❌ 未找到模型: {target_model}\n"
+                    f"用 /model 查看所有可用模型"
+                )
+        else:
+            # Interactive mode: show current + inline keyboard
+            lines = [
+                f"当前路由: {current_provider}",
+                f"当前模型: {current_model}",
+                "",
+                "可用模型 (点击切换):",
+            ]
+            all_models = list_available_models()
+            buttons = []
+            for pname, models in all_models.items():
+                for m in models:
+                    is_current = (m == current_model and pname == current_provider)
+                    label = f"{'● ' if is_current else ''}{m}"
+                    cb_data = f"model:{pname}:{m}"
+                    # Telegram callback_data max 64 bytes — truncate if needed
+                    if len(cb_data.encode("utf-8")) <= 64:
+                        buttons.append([{"text": label, "callback_data": cb_data}])
+            markup = {"inline_keyboard": buttons} if buttons else None
+            send_with_budget(chat_id, "\n".join(lines), reply_markup=markup)
+        return True
+
     if lowered.startswith("/bg"):
         parts = lowered.split()
         action = parts[1] if len(parts) > 1 else "status"
@@ -519,6 +584,61 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         return f"[Supervisor handled /bg {action}]\n"
 
     return ""
+
+
+def _handle_callback_query(cb: Dict[str, Any]) -> None:
+    """Handle inline keyboard button presses (callback_query)."""
+    cb_id = cb.get("id", "")
+    data = cb.get("data", "")
+    from_user = cb.get("from") or {}
+    user_id = int(from_user.get("id") or 0)
+    chat_msg = cb.get("message") or {}
+    chat_id = int((chat_msg.get("chat") or {}).get("id") or 0)
+
+    # Only allow owner
+    st = load_state()
+    if st.get("owner_id") and user_id != int(st["owner_id"]):
+        TG.answer_callback_query(cb_id, "⛔ 无权限")
+        return
+
+    if data.startswith("provider:"):
+        # Switch provider
+        provider_name = data[len("provider:"):]
+        if apply_provider(provider_name):
+            kill_workers()
+            spawn_workers(MAX_WORKERS)
+            TG.answer_callback_query(cb_id, f"✅ 已切换到 {provider_name}")
+            send_with_budget(
+                chat_id,
+                f"✅ 路由已切换: {provider_name}\n"
+                f"  模型: {os.environ.get('OUROBOROS_MODEL')}"
+            )
+        else:
+            TG.answer_callback_query(cb_id, f"❌ 未知路由: {provider_name}")
+
+    elif data.startswith("model:"):
+        # Format: model:<provider>:<model_id>
+        parts = data.split(":", 2)
+        if len(parts) == 3:
+            _, provider_name, model_id = parts
+            current_provider = os.environ.get("OUROBOROS_PROVIDER", "")
+            if provider_name != current_provider:
+                apply_provider(provider_name)
+            os.environ["OUROBOROS_MODEL"] = model_id
+            os.environ["OUROBOROS_MODEL_CODE"] = model_id
+            kill_workers()
+            spawn_workers(MAX_WORKERS)
+            TG.answer_callback_query(cb_id, f"✅ {model_id}")
+            send_with_budget(
+                chat_id,
+                f"✅ 模型已切换\n"
+                f"  路由: {provider_name}\n"
+                f"  模型: {model_id}"
+            )
+        else:
+            TG.answer_callback_query(cb_id, "❌ 无效的回调数据")
+    else:
+        TG.answer_callback_query(cb_id, "❓ 未知操作")
 
 
 offset = int(load_state().get("tg_offset") or 0)
@@ -571,6 +691,16 @@ while True:
 
     for upd in updates:
         offset = int(upd["update_id"]) + 1
+
+        # Handle callback_query (inline keyboard button presses)
+        cb = upd.get("callback_query")
+        if cb:
+            try:
+                _handle_callback_query(cb)
+            except Exception:
+                log.warning("callback_query handler error", exc_info=True)
+            continue
+
         msg = upd.get("message") or upd.get("edited_message") or {}
         if not msg:
             continue

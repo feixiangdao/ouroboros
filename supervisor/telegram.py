@@ -7,6 +7,7 @@ TelegramClient, message splitting, markdown→HTML conversion, send_with_budget.
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -57,7 +58,7 @@ class TelegramClient:
                 r = requests.get(
                     f"{self.base}/getUpdates",
                     params={"offset": offset, "timeout": timeout,
-                            "allowed_updates": ["message", "edited_message"]},
+                            "allowed_updates": ["message", "edited_message", "callback_query"]},
                     timeout=timeout + 5,
                 )
                 r.raise_for_status()
@@ -72,7 +73,8 @@ class TelegramClient:
                     time.sleep(0.8 * (attempt + 1))
         raise RuntimeError(f"Telegram getUpdates failed after retries: {last_err}")
 
-    def send_message(self, chat_id: int, text: str, parse_mode: str = "") -> Tuple[bool, str]:
+    def send_message(self, chat_id: int, text: str, parse_mode: str = "",
+                     reply_markup: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
         last_err = "unknown"
         for attempt in range(3):
             try:
@@ -80,6 +82,8 @@ class TelegramClient:
                                            "disable_web_page_preview": True}
                 if parse_mode:
                     payload["parse_mode"] = parse_mode
+                if reply_markup:
+                    payload["reply_markup"] = json.dumps(reply_markup)
                 r = requests.post(f"{self.base}/sendMessage", data=payload, timeout=30)
                 r.raise_for_status()
                 data = r.json()
@@ -164,6 +168,20 @@ class TelegramClient:
         except Exception:
             log.warning("Failed to download file_id=%s from Telegram", file_id, exc_info=True)
             return None, ""
+
+    def answer_callback_query(self, callback_query_id: str, text: str = "") -> bool:
+        """Acknowledge a callback_query (inline keyboard button press). Best-effort."""
+        try:
+            payload: Dict[str, Any] = {"callback_query_id": callback_query_id}
+            if text:
+                payload["text"] = text[:200]
+            r = requests.post(
+                f"{self.base}/answerCallbackQuery", data=payload, timeout=5,
+            )
+            return r.status_code == 200
+        except Exception:
+            log.debug("Failed to answer callback_query %s", callback_query_id, exc_info=True)
+            return False
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +437,8 @@ def log_chat(direction: str, chat_id: int, user_id: int, text: str) -> None:
 
 def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
                      force_budget: bool = False, fmt: str = "",
-                     is_progress: bool = False) -> None:
+                     is_progress: bool = False,
+                     reply_markup: Optional[Dict[str, Any]] = None) -> None:
     st = load_state()
     owner_id = int(st.get("owner_id") or 0)
     # Progress messages go to progress.jsonl instead of chat.jsonl
@@ -461,8 +480,11 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
         return
 
     tg = get_tg()
-    for idx, part in enumerate(split_telegram(full)):
-        ok, err = tg.send_message(chat_id, part)
+    parts = split_telegram(full)
+    for idx, part in enumerate(parts):
+        # Attach reply_markup only to the last chunk
+        _markup = reply_markup if (idx == len(parts) - 1) else None
+        ok, err = tg.send_message(chat_id, part, reply_markup=_markup)
         if not ok:
             append_jsonl(
                 DRIVE_ROOT / "logs" / "supervisor.jsonl",

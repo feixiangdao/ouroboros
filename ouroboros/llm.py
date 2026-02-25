@@ -42,6 +42,21 @@ def list_providers() -> Dict[str, Any]:
     return {}
 
 
+def list_available_models(provider: str = None) -> Dict[str, List[str]]:
+    """Return available models grouped by provider.
+
+    If *provider* is given, return only that provider's models.
+    Returns ``{provider_name: [model_id, ...]}``.
+    """
+    providers = list_providers()
+    result: Dict[str, List[str]] = {}
+    for pname, pcfg in providers.items():
+        if provider and pname != provider:
+            continue
+        result[pname] = list(pcfg.get("available_models") or [])
+    return result
+
+
 def apply_provider(name: str) -> bool:
     """
     Apply a named provider's config to env vars so all subsequent LLMClient
