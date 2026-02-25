@@ -121,7 +121,7 @@ assert GITHUB_USER and str(GITHUB_USER).strip(), "GITHUB_USER not set. Add it to
 assert GITHUB_REPO and str(GITHUB_REPO).strip(), "GITHUB_REPO not set. Add it to your config cell (see README)."
 MAX_WORKERS = int(get_cfg("OUROBOROS_MAX_WORKERS", default="5", allow_legacy_secret=True) or "5")
 # API routing — configurable via Colab Secrets or env vars
-OUROBOROS_BASE_URL = get_cfg("OUROBOROS_BASE_URL", default="https://anyrouter.top/v1", allow_legacy_secret=True)
+OUROBOROS_BASE_URL = get_cfg("OUROBOROS_BASE_URL", default="https://anyrouter.top", allow_legacy_secret=True)
 MODEL_MAIN  = get_cfg("OUROBOROS_MODEL",       default="claude-opus-4-6", allow_legacy_secret=True)
 MODEL_CODE  = get_cfg("OUROBOROS_MODEL_CODE",  default="claude-opus-4-6", allow_legacy_secret=True)
 MODEL_LIGHT = get_cfg("OUROBOROS_MODEL_LIGHT", default=DEFAULT_LIGHT_MODEL, allow_legacy_secret=True)
@@ -140,7 +140,13 @@ DIAG_SLOW_CYCLE_SEC = _parse_int_cfg(
     minimum=0,
 )
 
-# Apply provider defaults from providers.json (env vars override per-field below)
+# Export provider-specific API keys from Colab Secrets to env (so apply_provider can read them)
+for _provider_key_name in ["ANYROUTER_API_KEY", "OPENROUTER_API_KEY"]:
+    _pv = _userdata_get(_provider_key_name)
+    if _pv and str(_pv).strip():
+        os.environ.setdefault(_provider_key_name, str(_pv))
+
+# Apply provider defaults from providers.json
 _default_provider = os.environ.get("OUROBOROS_PROVIDER") or ""
 if not _default_provider:
     try:
@@ -153,9 +159,10 @@ if not _default_provider:
 if _default_provider:
     apply_provider(_default_provider)
 
+# Set env vars — use setdefault for values apply_provider may have already set
 os.environ["OUROBOROS_API_KEY"]   = str(OUROBOROS_API_KEY)
 os.environ["OPENROUTER_API_KEY"]  = str(OUROBOROS_API_KEY)  # backward compat
-os.environ["OUROBOROS_BASE_URL"]  = str(OUROBOROS_BASE_URL)
+os.environ.setdefault("OUROBOROS_BASE_URL", str(OUROBOROS_BASE_URL))
 os.environ["OPENAI_API_KEY"]      = str(OPENAI_API_KEY or "")
 os.environ["ANTHROPIC_API_KEY"]   = str(ANTHROPIC_API_KEY or "")
 os.environ["GITHUB_USER"]         = str(GITHUB_USER)
