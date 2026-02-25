@@ -1,0 +1,23 @@
+{
+  "default": "anyrouter",
+  "providers": {
+    "anyrouter": {
+      "base_url": "https://anyrouter.top/v1",
+      "api_key_env": "ANYROUTER_API_KEY",
+      "models": {
+        "main":  "claude-opus-4-6",
+        "code":  "claude-opus-4-6",
+        "light": "claude-opus-4-6"
+      }
+    },
+    "openrouter": {
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "models": {
+        "main":  "anthropic/claude-sonnet-4.6",
+        "code":  "anthropic/claude-sonnet-4.6",
+        "light": "google/gemini-3-pro-preview"
+      }
+    }
+  }
+}

@@ -44,7 +44,7 @@ def ensure_claude_code_cli() -> bool:
 # 0.1) provide apply_patch shim
 # ----------------------------
 from ouroboros.apply_patch import install as install_apply_patch
-from ouroboros.llm import DEFAULT_LIGHT_MODEL
+from ouroboros.llm import DEFAULT_LIGHT_MODEL, apply_provider, list_providers
 install_apply_patch()
 
 # ----------------------------
@@ -90,7 +90,12 @@ def _parse_int_cfg(raw: Optional[str], default: int, minimum: int = 0) -> int:
         val = default
     return max(minimum, val)
 
-OPENROUTER_API_KEY = get_secret("OPENROUTER_API_KEY", required=True)
+# API key: prefer OUROBOROS_API_KEY, fallback to OPENROUTER_API_KEY for backward compat
+OUROBOROS_API_KEY = get_secret("OUROBOROS_API_KEY", default="") or get_secret("OPENROUTER_API_KEY", default="")
+assert OUROBOROS_API_KEY and str(OUROBOROS_API_KEY).strip(), \
+    "Missing required secret: OUROBOROS_API_KEY (or legacy OPENROUTER_API_KEY)"
+OPENROUTER_API_KEY = OUROBOROS_API_KEY  # keep alias for backward compat
+
 TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", required=True)
 TOTAL_BUDGET_DEFAULT = get_secret("TOTAL_BUDGET", required=True)
 GITHUB_TOKEN = get_secret("GITHUB_TOKEN", required=True)
@@ -115,8 +120,10 @@ GITHUB_REPO = get_cfg("GITHUB_REPO", default=None, allow_legacy_secret=True)
 assert GITHUB_USER and str(GITHUB_USER).strip(), "GITHUB_USER not set. Add it to your config cell (see README)."
 assert GITHUB_REPO and str(GITHUB_REPO).strip(), "GITHUB_REPO not set. Add it to your config cell (see README)."
 MAX_WORKERS = int(get_cfg("OUROBOROS_MAX_WORKERS", default="5", allow_legacy_secret=True) or "5")
-MODEL_MAIN = get_cfg("OUROBOROS_MODEL", default="anthropic/claude-sonnet-4.6", allow_legacy_secret=True)
-MODEL_CODE = get_cfg("OUROBOROS_MODEL_CODE", default="anthropic/claude-sonnet-4.6", allow_legacy_secret=True)
+# API routing — configurable via Colab Secrets or env vars
+OUROBOROS_BASE_URL = get_cfg("OUROBOROS_BASE_URL", default="https://anyrouter.top/v1", allow_legacy_secret=True)
+MODEL_MAIN  = get_cfg("OUROBOROS_MODEL",       default="claude-opus-4-6", allow_legacy_secret=True)
+MODEL_CODE  = get_cfg("OUROBOROS_MODEL_CODE",  default="claude-opus-4-6", allow_legacy_secret=True)
 MODEL_LIGHT = get_cfg("OUROBOROS_MODEL_LIGHT", default=DEFAULT_LIGHT_MODEL, allow_legacy_secret=True)
 
 BUDGET_REPORT_EVERY_MESSAGES = 10
@@ -133,13 +140,28 @@ DIAG_SLOW_CYCLE_SEC = _parse_int_cfg(
     minimum=0,
 )
 
-os.environ["OPENROUTER_API_KEY"] = str(OPENROUTER_API_KEY)
-os.environ["OPENAI_API_KEY"] = str(OPENAI_API_KEY or "")
-os.environ["ANTHROPIC_API_KEY"] = str(ANTHROPIC_API_KEY or "")
-os.environ["GITHUB_USER"] = str(GITHUB_USER)
-os.environ["GITHUB_REPO"] = str(GITHUB_REPO)
-os.environ["OUROBOROS_MODEL"] = str(MODEL_MAIN or "anthropic/claude-sonnet-4.6")
-os.environ["OUROBOROS_MODEL_CODE"] = str(MODEL_CODE or "anthropic/claude-sonnet-4.6")
+# Apply provider defaults from providers.json (env vars override per-field below)
+_default_provider = os.environ.get("OUROBOROS_PROVIDER") or ""
+if not _default_provider:
+    try:
+        import json as _json, pathlib as _pl
+        _pf = _pl.Path(__file__).parent / "providers.json"
+        if _pf.exists():
+            _default_provider = _json.loads(_pf.read_text()).get("default", "")
+    except Exception:
+        pass
+if _default_provider:
+    apply_provider(_default_provider)
+
+os.environ["OUROBOROS_API_KEY"]   = str(OUROBOROS_API_KEY)
+os.environ["OPENROUTER_API_KEY"]  = str(OUROBOROS_API_KEY)  # backward compat
+os.environ["OUROBOROS_BASE_URL"]  = str(OUROBOROS_BASE_URL)
+os.environ["OPENAI_API_KEY"]      = str(OPENAI_API_KEY or "")
+os.environ["ANTHROPIC_API_KEY"]   = str(ANTHROPIC_API_KEY or "")
+os.environ["GITHUB_USER"]         = str(GITHUB_USER)
+os.environ["GITHUB_REPO"]         = str(GITHUB_REPO)
+os.environ["OUROBOROS_MODEL"]     = str(MODEL_MAIN  or "claude-opus-4-6")
+os.environ["OUROBOROS_MODEL_CODE"]= str(MODEL_CODE  or "claude-opus-4-6")
 if MODEL_LIGHT:
     os.environ["OUROBOROS_MODEL_LIGHT"] = str(MODEL_LIGHT)
 os.environ["OUROBOROS_DIAG_HEARTBEAT_SEC"] = str(DIAG_HEARTBEAT_SEC)
@@ -265,6 +287,7 @@ append_jsonl(DRIVE_ROOT / "logs" / "supervisor.jsonl", {
     "branch": load_state().get("current_branch"),
     "sha": load_state().get("current_sha"),
     "max_workers": MAX_WORKERS,
+    "base_url": OUROBOROS_BASE_URL,
     "model_default": MODEL_MAIN, "model_code": MODEL_CODE, "model_light": MODEL_LIGHT,
     "soft_timeout_sec": SOFT_TIMEOUT_SEC, "hard_timeout_sec": HARD_TIMEOUT_SEC,
     "worker_start_method": str(os.environ.get("OUROBOROS_WORKER_START_METHOD") or ""),
@@ -441,6 +464,38 @@ def _handle_supervisor_command(text: str, chat_id: int, tg_offset: int = 0):
         state_str = "ON" if turn_on else "OFF"
         send_with_budget(chat_id, f"🧬 Evolution: {state_str}")
         return f"[Supervisor handled /evolve — evolution toggled {state_str}]\n"
+
+    if lowered.startswith("/provider"):
+        parts = text.strip().split()
+        if len(parts) == 1:
+            # List available providers
+            providers = list_providers()
+            current = os.environ.get("OUROBOROS_PROVIDER", "未知")
+            lines = [f"当前路由: {current}", "", "可用路由:"]
+            for pname, pcfg in providers.items():
+                marker = " ←" if pname == current else ""
+                lines.append(f"  • {pname} ({pcfg.get('base_url', '?')}){marker}")
+            lines.append("", "用 /provider <名称> 切换")
+            send_with_budget(chat_id, "\n".join(lines))
+        else:
+            provider_name = parts[1].strip()
+            if apply_provider(provider_name):
+                kill_workers()
+                spawn_workers(MAX_WORKERS)
+                send_with_budget(
+                    chat_id,
+                    f"✅ 已切换到路由: {provider_name}\n"
+                    f"  base_url: {os.environ.get('OUROBOROS_BASE_URL')}\n"
+                    f"  model:    {os.environ.get('OUROBOROS_MODEL')}"
+                )
+            else:
+                providers = list_providers()
+                send_with_budget(
+                    chat_id,
+                    f"❌ 未知路由: {provider_name}\n"
+                    f"可用: {', '.join(providers.keys()) or '(providers.json 未配置)'}"
+                )
+        return True
 
     if lowered.startswith("/bg"):
         parts = lowered.split()

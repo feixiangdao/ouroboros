@@ -1,20 +1,79 @@
 """
 Ouroboros — LLM client.
 
-The only module that communicates with the LLM API (OpenRouter).
+The only module that communicates with the LLM API.
+Supports any OpenAI-compatible endpoint (OpenRouter, anyrouter, LiteLLM, etc.).
 Contract: chat(), default_model(), available_models(), add_usage().
+
+Configuration (env vars):
+  OUROBOROS_BASE_URL  — API base URL  (default: https://anyrouter.top/v1)
+  OUROBOROS_API_KEY   — API key       (fallback: OPENROUTER_API_KEY)
+  OUROBOROS_MODEL     — main model    (default: claude-opus-4-6)
+  OUROBOROS_MODEL_CODE— code model    (default: same as OUROBOROS_MODEL)
+  OUROBOROS_MODEL_LIGHT— light model  (default: claude-opus-4-6)
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import pathlib
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
-DEFAULT_LIGHT_MODEL = "google/gemini-3-pro-preview"
+DEFAULT_LIGHT_MODEL = "claude-opus-4-6"
+
+# providers.json lives at the repo root (two levels up from this file)
+_PROVIDERS_FILE = pathlib.Path(__file__).parent.parent / "providers.json"
+
+
+def list_providers() -> Dict[str, Any]:
+    """Return all configured providers from providers.json. Empty dict on failure."""
+    try:
+        if _PROVIDERS_FILE.exists():
+            return json.loads(_PROVIDERS_FILE.read_text(encoding="utf-8")).get("providers", {})
+    except Exception as e:
+        log.warning("Failed to load providers.json: %s", e)
+    return {}
+
+
+def apply_provider(name: str) -> bool:
+    """
+    Apply a named provider's config to env vars so all subsequent LLMClient
+    instances (and newly spawned workers) use it.
+
+    Returns True if the provider was found and applied, False otherwise.
+    """
+    providers = list_providers()
+    cfg = providers.get(name)
+    if not cfg:
+        return False
+
+    if cfg.get("base_url"):
+        os.environ["OUROBOROS_BASE_URL"] = cfg["base_url"]
+
+    api_key_env = cfg.get("api_key_env", "")
+    if api_key_env:
+        key = os.environ.get(api_key_env, "")
+        if key:
+            os.environ["OUROBOROS_API_KEY"] = key
+            os.environ["OPENROUTER_API_KEY"] = key  # backward compat
+
+    models = cfg.get("models", {})
+    if models.get("main"):
+        os.environ["OUROBOROS_MODEL"] = models["main"]
+    if models.get("code"):
+        os.environ["OUROBOROS_MODEL_CODE"] = models["code"]
+    if models.get("light"):
+        os.environ["OUROBOROS_MODEL_LIGHT"] = models["light"]
+
+    os.environ["OUROBOROS_PROVIDER"] = name
+    log.info("Provider switched to '%s' (base_url=%s, model=%s)",
+             name, cfg.get("base_url"), models.get("main"))
+    return True
 
 
 def normalize_reasoning_effort(value: str, default: str = "medium") -> str:
@@ -103,15 +162,22 @@ def fetch_openrouter_pricing() -> Dict[str, Tuple[float, float, float]]:
 
 
 class LLMClient:
-    """OpenRouter API wrapper. All LLM calls go through this class."""
+    """OpenAI-compatible LLM API wrapper. Supports anyrouter, OpenRouter, LiteLLM, etc."""
 
     def __init__(
         self,
         api_key: Optional[str] = None,
-        base_url: str = "https://openrouter.ai/api/v1",
+        base_url: Optional[str] = None,
     ):
-        self._api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
-        self._base_url = base_url
+        self._api_key = (
+            api_key
+            or os.environ.get("OUROBOROS_API_KEY")
+            or os.environ.get("OPENROUTER_API_KEY", "")
+        )
+        self._base_url = (
+            base_url
+            or os.environ.get("OUROBOROS_BASE_URL", "https://anyrouter.top/v1")
+        )
         self._client = None
 
     def _get_client(self):
@@ -168,8 +234,9 @@ class LLMClient:
             "reasoning": {"effort": effort, "exclude": True},
         }
 
-        # Pin Anthropic models to Anthropic provider for prompt caching
-        if model.startswith("anthropic/"):
+        # Provider-specific routing (only applies to OpenRouter-compatible endpoints)
+        _base = self._base_url.lower()
+        if "openrouter" in _base and model.startswith("anthropic/"):
             extra_body["provider"] = {
                 "order": ["Anthropic"],
                 "allow_fallbacks": False,
@@ -231,7 +298,7 @@ class LLMClient:
         self,
         prompt: str,
         images: List[Dict[str, Any]],
-        model: str = "anthropic/claude-sonnet-4.6",
+        model: str = "claude-opus-4-6",
         max_tokens: int = 1024,
         reasoning_effort: str = "low",
     ) -> Tuple[str, Dict[str, Any]]:
@@ -280,11 +347,11 @@ class LLMClient:
 
     def default_model(self) -> str:
         """Return the single default model from env. LLM switches via tool if needed."""
-        return os.environ.get("OUROBOROS_MODEL", "anthropic/claude-sonnet-4.6")
+        return os.environ.get("OUROBOROS_MODEL", "claude-opus-4-6")
 
     def available_models(self) -> List[str]:
         """Return list of available models from env (for switch_model tool schema)."""
-        main = os.environ.get("OUROBOROS_MODEL", "anthropic/claude-sonnet-4.6")
+        main = os.environ.get("OUROBOROS_MODEL", "claude-opus-4-6")
         code = os.environ.get("OUROBOROS_MODEL_CODE", "")
         light = os.environ.get("OUROBOROS_MODEL_LIGHT", "")
         models = [main]
