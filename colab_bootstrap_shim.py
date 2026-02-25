@@ -74,11 +74,11 @@ _rc = subprocess.run(
 ).returncode
 
 if _rc == 0:
-    subprocess.run(["git", "checkout", BOOT_BRANCH], cwd=str(REPO_DIR), check=True)
-    subprocess.run(["git", "reset", "--hard", f"origin/{BOOT_BRANCH}"], cwd=str(REPO_DIR), check=True)
+    # Use -B to avoid ambiguity when branch name matches a directory (e.g. ouroboros/)
+    subprocess.run(["git", "checkout", "-B", BOOT_BRANCH, f"origin/{BOOT_BRANCH}"], cwd=str(REPO_DIR), check=True)
 else:
     print(f"[boot] branch {BOOT_BRANCH} not found on fork — creating from origin/main")
-    subprocess.run(["git", "checkout", "-b", BOOT_BRANCH, "origin/main"], cwd=str(REPO_DIR), check=True)
+    subprocess.run(["git", "checkout", "-B", BOOT_BRANCH, "origin/main"], cwd=str(REPO_DIR), check=True)
     subprocess.run(["git", "push", "-u", "origin", BOOT_BRANCH], cwd=str(REPO_DIR), check=True)
     _STABLE = f"{BOOT_BRANCH}-stable"
     subprocess.run(["git", "branch", _STABLE], cwd=str(REPO_DIR), check=True)
