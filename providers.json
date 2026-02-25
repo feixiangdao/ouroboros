@@ -1,6 +1,16 @@
 {
-  "default": "anyrouter",
+  "default": "kimi",
   "providers": {
+    "kimi": {
+      "base_url": "https://api.kimi.com/coding",
+      "api": "anthropic-messages",
+      "api_key_env": "KIMI_API_KEY",
+      "models": {
+        "main":  "kimi-for-coding",
+        "code":  "kimi-for-coding",
+        "light": "kimi-for-coding"
+      }
+    },
     "anyrouter": {
       "base_url": "https://anyrouter.top",
       "api": "anthropic-messages",

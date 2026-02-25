@@ -141,7 +141,7 @@ DIAG_SLOW_CYCLE_SEC = _parse_int_cfg(
 )
 
 # Export provider-specific API keys from Colab Secrets to env (so apply_provider can read them)
-for _provider_key_name in ["ANYROUTER_API_KEY", "OPENROUTER_API_KEY"]:
+for _provider_key_name in ["KIMI_API_KEY", "ANYROUTER_API_KEY", "OPENROUTER_API_KEY"]:
     _pv = _userdata_get(_provider_key_name)
     if _pv and str(_pv).strip():
         os.environ.setdefault(_provider_key_name, str(_pv))
