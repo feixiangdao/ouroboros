@@ -122,8 +122,8 @@ assert GITHUB_REPO and str(GITHUB_REPO).strip(), "GITHUB_REPO not set. Add it to
 MAX_WORKERS = int(get_cfg("OUROBOROS_MAX_WORKERS", default="5", allow_legacy_secret=True) or "5")
 # API routing — configurable via Colab Secrets or env vars
 OUROBOROS_BASE_URL = get_cfg("OUROBOROS_BASE_URL", default="https://anyrouter.top", allow_legacy_secret=True)
-MODEL_MAIN  = get_cfg("OUROBOROS_MODEL",       default="claude-opus-4-6", allow_legacy_secret=True)
-MODEL_CODE  = get_cfg("OUROBOROS_MODEL_CODE",  default="claude-opus-4-6", allow_legacy_secret=True)
+MODEL_MAIN  = get_cfg("OUROBOROS_MODEL",       default="anyrouter/claude-opus-4-6", allow_legacy_secret=True)
+MODEL_CODE  = get_cfg("OUROBOROS_MODEL_CODE",  default="anyrouter/claude-opus-4-6", allow_legacy_secret=True)
 MODEL_LIGHT = get_cfg("OUROBOROS_MODEL_LIGHT", default=DEFAULT_LIGHT_MODEL, allow_legacy_secret=True)
 
 BUDGET_REPORT_EVERY_MESSAGES = 10
@@ -167,8 +167,8 @@ os.environ["OPENAI_API_KEY"]      = str(OPENAI_API_KEY or "")
 os.environ["ANTHROPIC_API_KEY"]   = str(ANTHROPIC_API_KEY or "")
 os.environ["GITHUB_USER"]         = str(GITHUB_USER)
 os.environ["GITHUB_REPO"]         = str(GITHUB_REPO)
-os.environ["OUROBOROS_MODEL"]     = str(MODEL_MAIN  or "claude-opus-4-6")
-os.environ["OUROBOROS_MODEL_CODE"]= str(MODEL_CODE  or "claude-opus-4-6")
+os.environ["OUROBOROS_MODEL"]     = str(MODEL_MAIN  or "anyrouter/claude-opus-4-6")
+os.environ["OUROBOROS_MODEL_CODE"]= str(MODEL_CODE  or "anyrouter/claude-opus-4-6")
 if MODEL_LIGHT:
     os.environ["OUROBOROS_MODEL_LIGHT"] = str(MODEL_LIGHT)
 os.environ["OUROBOROS_DIAG_HEARTBEAT_SEC"] = str(DIAG_HEARTBEAT_SEC)

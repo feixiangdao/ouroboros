@@ -6,9 +6,9 @@
       "api": "anthropic-messages",
       "api_key_env": "ANYROUTER_API_KEY",
       "models": {
-        "main":  "claude-opus-4-6",
-        "code":  "claude-opus-4-6",
-        "light": "claude-opus-4-6"
+        "main":  "anyrouter/claude-opus-4-6",
+        "code":  "anyrouter/claude-opus-4-6",
+        "light": "anyrouter/claude-opus-4-6"
       }
     },
     "openrouter": {

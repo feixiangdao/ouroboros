@@ -9,9 +9,9 @@ Configuration (env vars):
   OUROBOROS_BASE_URL  — API base URL     (default: https://anyrouter.top)
   OUROBOROS_API_KEY   — API key          (fallback: OPENROUTER_API_KEY)
   OUROBOROS_API_TYPE  — API format       (default: anthropic-messages)
-  OUROBOROS_MODEL     — main model       (default: claude-opus-4-6)
+  OUROBOROS_MODEL     — main model       (default: anyrouter/claude-opus-4-6)
   OUROBOROS_MODEL_CODE— code model       (default: same as OUROBOROS_MODEL)
-  OUROBOROS_MODEL_LIGHT— light model     (default: claude-opus-4-6)
+  OUROBOROS_MODEL_LIGHT— light model     (default: anyrouter/claude-opus-4-6)
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
-DEFAULT_LIGHT_MODEL = "claude-opus-4-6"
+DEFAULT_LIGHT_MODEL = "anyrouter/claude-opus-4-6"
 
 # providers.json lives at the repo root (two levels up from this file)
 _PROVIDERS_FILE = pathlib.Path(__file__).parent.parent / "providers.json"
@@ -474,7 +474,7 @@ class LLMClient:
         self,
         prompt: str,
         images: List[Dict[str, Any]],
-        model: str = "claude-opus-4-6",
+        model: str = "anyrouter/claude-opus-4-6",
         max_tokens: int = 1024,
         reasoning_effort: str = "low",
     ) -> Tuple[str, Dict[str, Any]]:
@@ -523,11 +523,11 @@ class LLMClient:
 
     def default_model(self) -> str:
         """Return the single default model from env. LLM switches via tool if needed."""
-        return os.environ.get("OUROBOROS_MODEL", "claude-opus-4-6")
+        return os.environ.get("OUROBOROS_MODEL", "anyrouter/claude-opus-4-6")
 
     def available_models(self) -> List[str]:
         """Return list of available models from env (for switch_model tool schema)."""
-        main = os.environ.get("OUROBOROS_MODEL", "claude-opus-4-6")
+        main = os.environ.get("OUROBOROS_MODEL", "anyrouter/claude-opus-4-6")
         code = os.environ.get("OUROBOROS_MODEL_CODE", "")
         light = os.environ.get("OUROBOROS_MODEL_LIGHT", "")
         models = [main]
